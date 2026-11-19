@@ -1,0 +1,22 @@
+{
+  "items": [
+    {
+      "volumeInfo": {
+        "title": "The 3 Mistakes of My Life",
+        "authors": ["Chetan Bhagat"],
+        "publisher": "Rupa Publications",
+        "publishedDate": "2008-01-01",
+        "language": "en",
+        "pageCount": 258,
+        "description": "A novel about friendship, ambition and cricket.",
+        "industryIdentifiers": [
+          {"type": "ISBN_13", "identifier": "9780143424123"}
+        ],
+        "categories": ["Fiction"]
+      },
+      "saleInfo": {
+        "retailPrice": {"amount": 12.5, "currencyCode": "USD"}
+      }
+    }
+  ]
+}

@@ -18,6 +18,7 @@ dist/
 *.sqlite
 *.sqlite3
 *.bak
+*.backup*
 
 # Logs
 *.log
@@ -28,20 +29,14 @@ dist/
 
 # Temporary files
 *.tmp
-# TypeScript build cache
+
+# TypeScript
 *.tsbuildinfo
+ts_out.txt
 
 # Build output
 coverage/
-# Database backups
-*.backup*
-*.bak
-*.db
-*.sqlite
-*.sqlite3
 
-# TypeScript generated files
-*.tsbuildinfo
-
-# Generated output
-ts_out.txt
+# Pytest
+.pytest_cache/
+.pytest-temp-*/

@@ -22,8 +22,9 @@ async def fake_metadata_search(**kwargs):
             "title": "Ikigai",
             "author": "Héctor García",
             "publisher": "Penguin",
-            "price": None,
-            "price_source": None,
+            "price": 12,
+            "price_source": "Mock provider (USD)",
+            "price_currency": "USD",
             "source": "Mock provider",
         }
     ]
@@ -76,7 +77,7 @@ def test_normalize_candidate():
     assert c["publisher"] == "Universities Press"
     assert c["price"] == 295.0
     assert c["price_source"] == "Google Books (INR)"
-    assert "isbn" not in c  # Persistent fields only!
+    assert c["isbn"] is None
 
 
 def test_clean_ocr_lines():
@@ -131,7 +132,8 @@ def test_api_recognition_barcode_endpoint(monkeypatch):
         first = data[0]
         assert "title" in first
         assert "author" in first
-        assert "isbn" not in first  # ISBN not persisted in candidate
+        assert first["price_currency"] == "USD"
+        assert first["isbn"] is None
 
 
 def test_api_recognition_scan_endpoint(monkeypatch):

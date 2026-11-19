@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import re
 from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, select, func
@@ -14,6 +15,49 @@ from ..auth.dependencies import (
 )
 
 router = APIRouter(prefix="/api/books", tags=["books"])
+
+
+def _stock_number_suggestion(stock_numbers: list[str]) -> str:
+    trailing = []
+    for stock in stock_numbers:
+        match = re.match(r"^(.*?)(\d+)$", stock.strip())
+        if match:
+            trailing.append((match.group(1), int(match.group(2)), len(match.group(2))))
+    if trailing:
+        prefix, _, width = max(trailing, key=lambda item: item[1])
+        next_number = max(number for item_prefix, number, _ in trailing if item_prefix == prefix) + 1
+        return f"{prefix}{next_number:0{width}d}"
+
+    numbers = [int(value) for stock in stock_numbers for value in re.findall(r"\d+", stock)]
+    return str(max(numbers, default=0) + 1)
+
+
+@router.get("/stock-number/suggestion")
+def suggest_stock_number(
+    current_user: User = Depends(require_any_authenticated),
+    db: Session = Depends(get_db),
+):
+    existing = db.scalars(select(Book.stock_number)).all()
+    suggestion = _stock_number_suggestion(existing)
+    while db.scalar(select(Book.id).where(Book.stock_number == suggestion)) is not None:
+        match = re.match(r"^(.*?)(\d+)$", suggestion)
+        suggestion = f"{match.group(1)}{int(match.group(2)) + 1}" if match else f"{suggestion}1"
+    return {"stock_number": suggestion}
+
+
+@router.get("/stock-number/check")
+def check_stock_number(
+    stock_number: str = Query(min_length=1, max_length=100),
+    current_user: User = Depends(require_any_authenticated),
+    db: Session = Depends(get_db),
+):
+    book = db.scalar(select(Book).where(Book.stock_number == stock_number.strip()))
+    return {
+        "stock_number": stock_number.strip(),
+        "used": book is not None,
+        "title": book.title if book else None,
+        "book_id": book.id if book else None,
+    }
 
 
 @router.get("/meta/categories")

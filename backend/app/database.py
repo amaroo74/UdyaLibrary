@@ -60,6 +60,18 @@ def run_migrations():
                     conn.exec_driver_sql("ALTER TABLE books ADD COLUMN version INTEGER DEFAULT 1 NOT NULL")
                 if book_cols and "device_id" not in book_cols:
                     conn.exec_driver_sql("ALTER TABLE books ADD COLUMN device_id VARCHAR(100)")
+                for column, definition in [
+                    ("publication_date", "VARCHAR(50)"),
+                    ("publication_year", "INTEGER"),
+                    ("edition", "VARCHAR(300)"),
+                    ("language", "VARCHAR(100)"),
+                    ("page_count", "INTEGER"),
+                    ("description", "TEXT"),
+                    ("isbn", "VARCHAR(13)"),
+                    ("price_currency", "VARCHAR(3)"),
+                ]:
+                    if book_cols and column not in book_cols:
+                        conn.exec_driver_sql(f"ALTER TABLE books ADD COLUMN {column} {definition}")
 
                 conn.commit()
         except Exception:

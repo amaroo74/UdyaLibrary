@@ -24,7 +24,10 @@ app = FastAPI(
     description="Book catalogue API for Udaya Vayanasala, Erattapuzha, Chavakkad, Thrissur.",
     version="0.1.0",
 )
-origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+origins = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174",
+).split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in origins],

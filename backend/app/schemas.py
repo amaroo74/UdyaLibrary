@@ -1,15 +1,24 @@
 from datetime import datetime
 from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from .isbn import normalize_isbn
 
 class BookCreate(BaseModel):
     stock_number: str = Field(min_length=1, max_length=100)
     title: str = Field(min_length=1, max_length=500)
     author: str | None = Field(default=None, max_length=500)
     publisher: str | None = Field(default=None, max_length=300)
+    publication_date: str | None = Field(default=None, max_length=50)
+    publication_year: int | None = Field(default=None, ge=0, le=9999)
+    edition: str | None = Field(default=None, max_length=300)
+    language: str | None = Field(default=None, max_length=100)
+    page_count: int | None = Field(default=None, ge=1)
+    description: str | None = None
+    isbn: str | None = Field(default=None, max_length=20)
     category: str | None = Field(default=None, max_length=150)
     subcategory: str | None = Field(default=None, max_length=150)
     price: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=2)
+    price_currency: str | None = Field(default=None, min_length=3, max_length=3)
     price_source: str | None = Field(default=None, max_length=100)
     price_confirmed: bool = False
 
@@ -21,7 +30,7 @@ class BookCreate(BaseModel):
             raise ValueError("This field cannot be blank")
         return value
 
-    @field_validator("author", "publisher", "category", "subcategory", "price_source")
+    @field_validator("author", "publisher", "publication_date", "edition", "language", "description", "category", "subcategory", "price_currency", "price_source")
     @classmethod
     def empty_to_none(cls, value: str | None) -> str | None:
         if value is not None:
@@ -30,14 +39,32 @@ class BookCreate(BaseModel):
                 return None
         return value
 
+    @field_validator("isbn")
+    @classmethod
+    def normalize_book_isbn(cls, value: str | None) -> str | None:
+        if not value or not value.strip():
+            return None
+        normalized = normalize_isbn(value)
+        if not normalized:
+            raise ValueError("ISBN must be a valid ISBN-10 or ISBN-13")
+        return normalized
+
 class BookUpdate(BaseModel):
     stock_number: str | None = Field(default=None, min_length=1, max_length=100)
     title: str | None = Field(default=None, min_length=1, max_length=500)
     author: str | None = Field(default=None, max_length=500)
     publisher: str | None = Field(default=None, max_length=300)
+    publication_date: str | None = Field(default=None, max_length=50)
+    publication_year: int | None = Field(default=None, ge=0, le=9999)
+    edition: str | None = Field(default=None, max_length=300)
+    language: str | None = Field(default=None, max_length=100)
+    page_count: int | None = Field(default=None, ge=1)
+    description: str | None = None
+    isbn: str | None = Field(default=None, max_length=20)
     category: str | None = Field(default=None, max_length=150)
     subcategory: str | None = Field(default=None, max_length=150)
     price: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=2)
+    price_currency: str | None = Field(default=None, min_length=3, max_length=3)
     price_source: str | None = Field(default=None, max_length=100)
     price_confirmed: bool | None = None
 
@@ -50,7 +77,7 @@ class BookUpdate(BaseModel):
                 raise ValueError("This field cannot be blank")
         return value
 
-    @field_validator("author", "publisher", "category", "subcategory", "price_source")
+    @field_validator("author", "publisher", "publication_date", "edition", "language", "description", "category", "subcategory", "price_currency", "price_source")
     @classmethod
     def empty_to_none(cls, value: str | None) -> str | None:
         if value is not None:
@@ -58,6 +85,16 @@ class BookUpdate(BaseModel):
             if not value:
                 return None
         return value
+
+    @field_validator("isbn")
+    @classmethod
+    def normalize_book_isbn(cls, value: str | None) -> str | None:
+        if not value or not value.strip():
+            return None
+        normalized = normalize_isbn(value)
+        if not normalized:
+            raise ValueError("ISBN must be a valid ISBN-10 or ISBN-13")
+        return normalized
 
 class BookRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -67,9 +104,18 @@ class BookRead(BaseModel):
     title: str
     author: str | None
     publisher: str | None
+    publication_date: str | None
+    publication_year: int | None
+    edition: str | None
+    language: str | None
+    page_count: int | None
+    description: str | None
     category: str | None
     subcategory: str | None
     price: Decimal | None
+    price_currency: str | None
+    isbn: str | None
+    isbn: str | None
     price_source: str | None
     price_confirmed: bool
     created_at: datetime

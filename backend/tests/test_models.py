@@ -48,6 +48,12 @@ def test_book_model_creation_and_fields(db_session: Session):
         title="ഇന്ദുലേഖ (Indulekha)",
         author="O. Chandu Menon",
         publisher="DC Books",
+        publication_date="2024-06-01",
+        publication_year=2024,
+        edition="Library edition",
+        language="ml",
+        page_count=320,
+        description="A Malayalam literary classic.",
         category="Fiction",
         subcategory="Novel",
         price=180.00,
@@ -66,6 +72,12 @@ def test_book_model_creation_and_fields(db_session: Session):
     assert book.title == "ഇന്ദുലേഖ (Indulekha)"
     assert book.author == "O. Chandu Menon"
     assert book.publisher == "DC Books"
+    assert book.publication_date == "2024-06-01"
+    assert book.publication_year == 2024
+    assert book.edition == "Library edition"
+    assert book.language == "ml"
+    assert book.page_count == 320
+    assert book.description == "A Malayalam literary classic."
     assert book.category == "Fiction"
     assert book.subcategory == "Novel"
     assert float(book.price) == 180.00

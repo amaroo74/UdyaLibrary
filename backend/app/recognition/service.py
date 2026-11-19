@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shutil
+from collections.abc import Awaitable, Callable
 from typing import Any
 from PIL import Image, ImageEnhance, ImageOps
 import zxingcpp
@@ -16,6 +17,7 @@ import zxingcpp
 from ..metadata.providers import search_metadata, clean_isbn
 
 logger = logging.getLogger(__name__)
+MetadataLookup = Callable[..., Awaitable[list[dict[str, Any]]]]
 
 # Check if tesseract is available
 TESSERACT_CMD = os.getenv("TESSERACT_CMD", "")
@@ -147,7 +149,10 @@ def extract_text_from_image(image: Image.Image) -> dict[str, Any]:
         }
 
 
-async def process_recognition_image(image_bytes: bytes) -> dict[str, Any]:
+async def process_recognition_image(
+    image_bytes: bytes,
+    metadata_lookup: MetadataLookup | None = None,
+) -> dict[str, Any]:
     """
     Full recognition pipeline:
     1. Reads image into memory.
@@ -173,6 +178,7 @@ async def process_recognition_image(image_bytes: bytes) -> dict[str, Any]:
     barcodes = extract_barcodes_from_image(image)
     detected_barcode = None
     candidates: list[dict[str, Any]] = []
+    lookup = metadata_lookup or search_metadata
 
     # Check if any barcode is ISBN-like (e.g. 10 or 13 digits starting with 978/979)
     for b in barcodes:
@@ -185,7 +191,7 @@ async def process_recognition_image(image_bytes: bytes) -> dict[str, Any]:
 
     # If barcode found, query metadata directly
     if detected_barcode:
-        candidates = await search_metadata(isbn=detected_barcode)
+        candidates = await lookup(isbn=detected_barcode)
 
     # 2. Conventional OCR text extraction
     ocr_result = extract_text_from_image(image)
@@ -195,7 +201,7 @@ async def process_recognition_image(image_bytes: bytes) -> dict[str, Any]:
     if not candidates and ocr_lines:
         # Heuristic: the top prominent lines are usually Title and Author
         search_query = " ".join(ocr_lines[:3])
-        candidates = await search_metadata(query=search_query)
+        candidates = await lookup(query=search_query)
 
     message = ""
     if detected_barcode and candidates:
