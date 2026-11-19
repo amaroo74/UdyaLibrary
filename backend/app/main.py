@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,16 +14,27 @@ from .routers.bulk import router as bulk_router
 from .routers.sync import router as sync_router
 from .routers.auth import provision_initial_admin
 
-Base.metadata.create_all(bind=engine)
-run_migrations()
-with Session(engine) as seed_session:
-    provision_initial_admin(seed_session)
-    seed_default_categories(seed_session)
+
+def initialize_database() -> None:
+    """Initialize database tables, run migrations, provision admin, and seed categories."""
+    Base.metadata.create_all(bind=engine)
+    run_migrations()
+    with Session(engine) as seed_session:
+        provision_initial_admin(seed_session)
+        seed_default_categories(seed_session)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    initialize_database()
+    yield
+
 
 app = FastAPI(
     title="Udaya Library Dataset API",
     description="Book catalogue API for Udaya Vayanasala, Erattapuzha, Chavakkad, Thrissur.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 origins = os.getenv(
     "CORS_ORIGINS",

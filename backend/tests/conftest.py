@@ -59,6 +59,8 @@ def assert_test_database_isolated() -> None:
 def pytest_sessionstart(session: pytest.Session) -> None:
     """Fail before test collection if the process is pointed at an app database."""
     assert_test_database_isolated()
+    from app.main import initialize_database
+    initialize_database()
 
 
 @pytest.fixture(autouse=True)
