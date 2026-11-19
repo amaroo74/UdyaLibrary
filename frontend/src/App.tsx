@@ -12,13 +12,16 @@ import {
   createUser,
   deleteBook,
   deleteCategory,
+  downloadCatalogueExport,
   downloadDatabaseBackup,
+  ExportFormat,
   getAuditLogs,
   getBooks,
   getCategories,
   getDeletedBooks,
-  getExportUrl,
   getMe,
+  getStockNumberSuggestion,
+  checkStockNumber,
   getSyncConflicts,
   getSyncStatus,
   getUsers,
@@ -40,17 +43,14 @@ import {
   User,
 } from './api'
 import { categoryLabel, Language, t } from './i18n'
-
-const emptyForm: BookInput = {
-  stock_number: '',
-  title: '',
-  author: '',
-  publisher: '',
-  category: '',
-  subcategory: '',
-  price: null,
-  price_confirmed: false,
-}
+import { currencyFromPriceSource, currencyLabel, formatBookPrice, formatPrice } from './price'
+import {
+  applyCandidateToForm,
+  emptyRegistrationForm,
+  isStockNumberDuplicate,
+  metadataStatusMessageKey,
+  RegistrationForm,
+} from './registration'
 
 function App() {
   const [lang, setLang] = useState<Language>('en')
@@ -109,6 +109,7 @@ function App() {
 
   // Phase 7: Export, Import & Batch Queue State
   const [showExportMenu, setShowExportMenu] = useState(false)
+  const [exportingFormat, setExportingFormat] = useState<ExportFormat | null>(null)
   const [showImportModal, setShowImportModal] = useState(false)
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importing, setImporting] = useState(false)
@@ -134,18 +135,23 @@ function App() {
   const [conflicts, setConflicts] = useState<SyncConflictItem[]>([])
 
   // Book registration modal state
-  const [form, setForm] = useState<BookInput>(emptyForm)
+  const [form, setForm] = useState<RegistrationForm>(emptyRegistrationForm)
+  const manuallyEditedFields = useRef<Set<string>>(new Set())
   const [editingId, setEditingId] = useState<number | null>(null)
   const [showForm, setShowForm] = useState(false)
+  const [stockDuplicate, setStockDuplicate] = useState<{ title: string | null; bookId: number | null } | null>(null)
 
   // Recognition state (Phase 4)
   const [candidates, setCandidates] = useState<MetadataCandidate[]>([])
+  const [selectedCandidate, setSelectedCandidate] = useState<MetadataCandidate | null>(null)
+  const [manualDetailsOpen, setManualDetailsOpen] = useState(false)
   const [scanning, setScanning] = useState(false)
   const [scanMessage, setScanMessage] = useState('')
   const [onlineQuery, setOnlineQuery] = useState('')
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const onlineSearchInputRef = useRef<HTMLInputElement | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
+  const stockInputRef = useRef<HTMLInputElement | null>(null)
 
   // Check current session
   const verifySession = useCallback(async () => {
@@ -174,6 +180,27 @@ function App() {
   useEffect(() => {
     void loadCategories()
   }, [loadCategories])
+
+  useEffect(() => {
+    if (!showForm || !form.stock_number.trim()) {
+      setStockDuplicate(null)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      void checkStockNumber(form.stock_number.trim())
+        .then(result => {
+          setStockDuplicate(
+            isStockNumberDuplicate(result.used, result.book_id, editingId)
+              ? { title: result.title, bookId: result.book_id }
+              : null,
+          )
+        })
+        .catch(err => {
+          setError(err instanceof Error ? err.message : 'Could not check the stock number')
+        })
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [editingId, form.stock_number, showForm])
 
   // Load cloud sync status (Phase 8)
   const loadSyncStatus = useCallback(async () => {
@@ -344,6 +371,29 @@ function App() {
     }
   }
 
+  async function handleExport(format: ExportFormat) {
+    setExportingFormat(format)
+    setError('')
+    try {
+      await downloadCatalogueExport(format, {
+        q: query,
+        category: selectedCategory,
+        subcategory: selectedSubcategory,
+        min_price: minPrice ? Number(minPrice) : null,
+        max_price: maxPrice ? Number(maxPrice) : null,
+        incomplete_only: incompleteOnly,
+        sort_by: sortBy,
+        sort_order: sortOrder,
+      })
+      setNotice(`Export downloaded (${format.toUpperCase()}).`)
+      setShowExportMenu(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Export download failed.')
+    } finally {
+      setExportingFormat(null)
+    }
+  }
+
   function handleSignOut() {
     clearAuthToken()
     setCurrentUser(null)
@@ -452,6 +502,8 @@ function App() {
         if (top.title) handleBatchRowChange(index, 'title', top.title)
         if (top.author) handleBatchRowChange(index, 'author', top.author)
         if (top.publisher) handleBatchRowChange(index, 'publisher', top.publisher)
+        if (top.category) handleBatchRowChange(index, 'category', top.category)
+        if (top.subcategory) handleBatchRowChange(index, 'subcategory', top.subcategory)
         if (top.price) handleBatchRowChange(index, 'price', top.price)
       }
       setNotice(`Extracted metadata for row #${index + 1}.`)
@@ -583,31 +635,75 @@ function App() {
 
   function startAdd() {
     setEditingId(null)
-    setForm(emptyForm)
+    manuallyEditedFields.current.clear()
+    setForm(emptyRegistrationForm)
     setError('')
     setCandidates([])
+    setSelectedCandidate(null)
+    setManualDetailsOpen(false)
+    setScanMessage('')
+    setOnlineQuery('')
+    setShowForm(true)
+    void getStockNumberSuggestion()
+      .then(result => {
+        setForm(current => current.stock_number.trim() ? current : { ...current, stock_number: result.stock_number })
+      })
+      .catch(err => setError(err instanceof Error ? err.message : 'Could not suggest a stock number'))
+  }
+
+  function formFromBook(book: Book): RegistrationForm {
+    return {
+      stock_number: book.stock_number,
+      title: book.title,
+      isbn: book.isbn,
+      author: book.author || '',
+      publisher: book.publisher || '',
+      publication_date: book.publication_date || null,
+      category: book.category || '',
+      subcategory: book.subcategory || '',
+      price: book.price === null ? null : Number(book.price),
+      price_currency: book.price_currency || currencyFromPriceSource(book.price_source),
+      price_source: book.price_source,
+      price_confirmed: book.price_confirmed,
+      published_date: book.publication_date || null,
+      publication_year: book.publication_year,
+      edition: book.edition,
+      language: book.language,
+      page_count: book.page_count,
+      description: book.description,
+    }
+  }
+
+  function startEdit(book: Book) {
+    setEditingId(book.id)
+    manuallyEditedFields.current.clear()
+    setForm(formFromBook(book))
+    setError('')
+    setCandidates([])
+    setSelectedCandidate(null)
+    setManualDetailsOpen(true)
     setScanMessage('')
     setOnlineQuery('')
     setShowForm(true)
   }
 
-  function startEdit(book: Book) {
-    setEditingId(book.id)
-    setForm({
-      stock_number: book.stock_number,
-      title: book.title,
-      author: book.author || '',
-      publisher: book.publisher || '',
-      category: book.category || '',
-      subcategory: book.subcategory || '',
-      price: book.price === null ? null : Number(book.price),
-      price_confirmed: book.price_confirmed,
-    })
+  function startCopy(book: Book) {
+    setEditingId(null)
+    manuallyEditedFields.current.clear()
+    setForm({ ...formFromBook(book), stock_number: '' })
     setError('')
     setCandidates([])
+    setSelectedCandidate(null)
+    setManualDetailsOpen(true)
     setScanMessage('')
     setOnlineQuery('')
+    setNotice(`${t(lang, 'copyBook')}: "${book.title}".`)
     setShowForm(true)
+    void getStockNumberSuggestion()
+      .then(result => {
+        setForm(current => current.stock_number.trim() ? current : { ...current, stock_number: result.stock_number })
+      })
+      .catch(err => setError(err instanceof Error ? err.message : 'Could not suggest a stock number'))
   }
 
   async function handleImageFile(file: File) {
@@ -634,8 +730,7 @@ function App() {
     }
   }
 
-  async function handleOnlineSearch(e: FormEvent) {
-    e.preventDefault()
+  async function handleOnlineSearch() {
     if (!onlineQuery.trim()) return
     setScanning(true)
     setScanMessage(t(lang, 'searching'))
@@ -643,13 +738,14 @@ function App() {
     try {
       const q = onlineQuery.trim()
       const isDigitsOnly = /^[0-9X-]{9,17}$/i.test(q)
-      const results = isDigitsOnly ? await lookupMetadata({ isbn: q }) : await lookupMetadata({ q })
-      setCandidates(results)
-      setScanMessage(
-        results.length > 0
-          ? t(lang, 'matchingCandidates', { count: results.length })
-          : t(lang, 'noBooksDesc')
-      )
+      // Treat the librarian's free-form lookup as a title search. This keeps
+      // provider title matching strict and avoids broad keyword results such
+      // as translated or unrelated editions outranking the requested book.
+      const result = isDigitsOnly
+        ? await lookupMetadata({ isbn: q })
+        : await lookupMetadata({ title: q, publisher: form.publisher?.trim() || undefined })
+      setCandidates(result.candidates)
+      setScanMessage(t(lang, metadataStatusMessageKey(result.status), { count: result.candidates.length }))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Metadata search failed')
       setScanMessage('')
@@ -661,18 +757,14 @@ function App() {
   function selectCandidate(candidate: MetadataCandidate) {
     const classification = resolveCategorySelection(candidate)
     setForm(current => {
-      const next = { ...current }
-      if (candidate.title.trim()) next.title = candidate.title
-      if (candidate.author?.trim()) next.author = candidate.author
-      if (candidate.publisher?.trim()) next.publisher = candidate.publisher
-      if (typeof candidate.price === 'number' && Number.isFinite(candidate.price)) {
-        next.price = candidate.price
-        next.price_confirmed = false
-      }
-      next.category = classification.category
-      next.subcategory = classification.subcategory
-      return next
+      return applyCandidateToForm(
+        current,
+        { ...candidate, category: classification.category, subcategory: classification.subcategory },
+        manuallyEditedFields.current,
+      )
     })
+    setSelectedCandidate({ ...candidate })
+    setManualDetailsOpen(false)
     setNotice(t(lang, 'useMetadata') + `: "${candidate.title}".`)
     setCandidates([])
     setScanMessage(
@@ -682,6 +774,23 @@ function App() {
           ? t(lang, 'priceUnavailable')
           : '',
     )
+    window.requestAnimationFrame(() => stockInputRef.current?.focus())
+  }
+
+  function updateSelectedMetadata<K extends keyof MetadataCandidate>(
+    fieldName: K,
+    value: MetadataCandidate[K],
+  ) {
+    setSelectedCandidate(current => (current ? { ...current, [fieldName]: value } : current))
+  }
+
+  function updateReviewedCatalogueField<K extends keyof BookInput & keyof MetadataCandidate>(
+    fieldName: K,
+    value: BookInput[K],
+    metadataValue: MetadataCandidate[K & keyof MetadataCandidate],
+  ) {
+    field(fieldName, value as RegistrationForm[K])
+    updateSelectedMetadata(fieldName as K & keyof MetadataCandidate, metadataValue)
   }
 
   async function submitForm(event: FormEvent) {
@@ -689,13 +798,15 @@ function App() {
     setSaving(true)
     setError('')
     const payload: BookInput = {
-      ...form,
       stock_number: form.stock_number.trim(),
       title: form.title.trim(),
       author: form.author?.trim() || undefined,
       publisher: form.publisher?.trim() || undefined,
       category: form.category?.trim() || undefined,
       subcategory: form.subcategory?.trim() || undefined,
+      price_source: form.price_source || undefined,
+      price_currency: form.price_currency || null,
+      price_confirmed: form.price_confirmed,
       price:
         form.price === null || form.price === undefined || Number.isNaN(Number(form.price))
           ? null
@@ -706,13 +817,15 @@ function App() {
         await updateBook(editingId, payload)
         setNotice(t(lang, 'saveChanges'))
         setShowForm(false)
-        setForm(emptyForm)
+        setForm(emptyRegistrationForm)
         setEditingId(null)
       } else {
         await addBook(payload)
         setNotice(`${t(lang, 'saveBook')} ${t(lang, 'addBookModalTitle')}.`)
-        setForm(emptyForm)
+        setForm(emptyRegistrationForm)
         setCandidates([])
+        setSelectedCandidate(null)
+        setManualDetailsOpen(false)
         setScanMessage('')
         setOnlineQuery('')
       }
@@ -792,9 +905,10 @@ function App() {
     }
   }
 
-  function field<K extends keyof BookInput>(key: K, value: BookInput[K]) {
+  function field<K extends keyof RegistrationForm>(key: K, value: RegistrationForm[K]) {
+    manuallyEditedFields.current.add(key)
     setForm(current => {
-      const next: BookInput = { ...current }
+      const next: RegistrationForm = { ...current }
       next[key] = value
       return next
     })
@@ -993,57 +1107,22 @@ function App() {
                     padding: 4,
                   }}
                 >
-                  <a
-                    href={getExportUrl('csv', {
-                      q: query,
-                      category: selectedCategory,
-                      subcategory: selectedSubcategory,
-                      min_price: minPrice ? Number(minPrice) : null,
-                      max_price: maxPrice ? Number(maxPrice) : null,
-                      incomplete_only: incompleteOnly,
-                      sort_by: sortBy,
-                      sort_order: sortOrder,
-                    })}
-                    download
-                    style={{ display: 'block', padding: '8px 12px', textDecoration: 'none', color: '#1a2e26', fontSize: 12, borderRadius: 4 }}
-                    onClick={() => setShowExportMenu(false)}
-                  >
-                    📄 {t(lang, 'exportCsv')}
-                  </a>
-                  <a
-                    href={getExportUrl('xlsx', {
-                      q: query,
-                      category: selectedCategory,
-                      subcategory: selectedSubcategory,
-                      min_price: minPrice ? Number(minPrice) : null,
-                      max_price: maxPrice ? Number(maxPrice) : null,
-                      incomplete_only: incompleteOnly,
-                      sort_by: sortBy,
-                      sort_order: sortOrder,
-                    })}
-                    download
-                    style={{ display: 'block', padding: '8px 12px', textDecoration: 'none', color: '#1a2e26', fontSize: 12, borderRadius: 4 }}
-                    onClick={() => setShowExportMenu(false)}
-                  >
-                    📊 {t(lang, 'exportExcel')}
-                  </a>
-                  <a
-                    href={getExportUrl('pdf', {
-                      q: query,
-                      category: selectedCategory,
-                      subcategory: selectedSubcategory,
-                      min_price: minPrice ? Number(minPrice) : null,
-                      max_price: maxPrice ? Number(maxPrice) : null,
-                      incomplete_only: incompleteOnly,
-                      sort_by: sortBy,
-                      sort_order: sortOrder,
-                    })}
-                    download
-                    style={{ display: 'block', padding: '8px 12px', textDecoration: 'none', color: '#1a2e26', fontSize: 12, borderRadius: 4 }}
-                    onClick={() => setShowExportMenu(false)}
-                  >
-                    📑 {t(lang, 'exportPdf')}
-                  </a>
+                  {([
+                    ['csv', '📄', 'exportCsv'],
+                    ['xlsx', '📊', 'exportExcel'],
+                    ['pdf', '📑', 'exportPdf'],
+                  ] as const).map(([format, icon, labelKey]) => (
+                    <button
+                      key={format}
+                      className="secondary-button"
+                      type="button"
+                      disabled={exportingFormat !== null}
+                      style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', border: 0, color: '#1a2e26', fontSize: 12, borderRadius: 4 }}
+                      onClick={() => void handleExport(format)}
+                    >
+                      {exportingFormat === format ? 'Downloading…' : `${icon} ${t(lang, labelKey)}`}
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
@@ -1243,6 +1322,7 @@ function App() {
                   <th>{t(lang, 'serialNo')}</th>
                   <th>{t(lang, 'stockNo')}</th>
                   <th>{t(lang, 'bookTitle')}</th>
+                  <th>ISBN</th>
                   <th>{t(lang, 'author')}</th>
                   <th>{t(lang, 'category')}</th>
                   <th>{t(lang, 'price')}</th>
@@ -1253,13 +1333,13 @@ function App() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={8} className="empty-state">
+                    <td colSpan={9} className="empty-state">
                       {t(lang, 'searching')}
                     </td>
                   </tr>
                 ) : books.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="empty-state">
+                    <td colSpan={9} className="empty-state">
                       <div className="empty-icon">▤</div>
                       <strong>{t(lang, 'noBooksFound')}</strong>
                       <span>{t(lang, 'noBooksDesc')}</span>
@@ -1271,6 +1351,7 @@ function App() {
                       <td className="serial-cell">{book.serial_number}</td>
                       <td>{book.stock_number}</td>
                       <td className="title-cell">{book.title}</td>
+                      <td>{book.isbn || <span className="missing">{t(lang, 'notEntered')}</span>}</td>
                       <td>{book.author || <span className="missing">{t(lang, 'notEntered')}</span>}</td>
                       <td>
                         {book.category ? (
@@ -1283,11 +1364,7 @@ function App() {
                         )}
                       </td>
                       <td>
-                        {book.price === null ? (
-                          <span className="missing">—</span>
-                        ) : (
-                          `₹${Number(book.price).toFixed(2)}`
-                        )}
+                        {formatBookPrice(book.price, book.price_source, book.price_currency)}
                       </td>
                       <td>
                         <span className={book.is_complete ? 'status complete' : 'status incomplete'}>
@@ -1300,6 +1377,9 @@ function App() {
                             <>
                               <button type="button" onClick={() => startEdit(book)} aria-label={`Edit ${book.title}`}>
                                 {t(lang, 'edit')}
+                              </button>
+                              <button type="button" onClick={() => startCopy(book)} aria-label={`${t(lang, 'copyBook')} ${book.title}`}>
+                                {t(lang, 'copyBook')}
                               </button>
                               {/* Restricted librarians cannot delete books */}
                               {currentUser?.role !== 'restricted_librarian' && (
@@ -1365,13 +1445,7 @@ function App() {
                           {book.category} {book.subcategory ? `› ${book.subcategory}` : ''}
                         </span>
                       )}
-                      {book.price !== null ? (
-                        <span className="card-price">₹{Number(book.price).toFixed(2)}</span>
-                      ) : (
-                        <span className="missing" style={{ fontSize: 11 }}>
-                          Price —
-                        </span>
-                      )}
+                      <span className="card-price">{formatBookPrice(book.price, book.price_source, book.price_currency)}</span>
                       <span className={book.is_complete ? 'status complete' : 'status incomplete'}>
                         {book.is_complete ? t(lang, 'complete') : t(lang, 'needsDetails')}
                       </span>
@@ -1382,6 +1456,9 @@ function App() {
                       <>
                         <button className="secondary-button" style={{ padding: '5px 9px', fontSize: 11 }} type="button" onClick={() => startEdit(book)}>
                           {t(lang, 'edit')}
+                        </button>
+                        <button className="secondary-button" style={{ padding: '5px 9px', fontSize: 11 }} type="button" onClick={() => startCopy(book)}>
+                          {t(lang, 'copyBook')}
                         </button>
                         {currentUser?.role !== 'restricted_librarian' && (
                           <button className="secondary-button" style={{ padding: '5px 9px', fontSize: 11, color: '#a16d63' }} type="button" onClick={() => void removeBook(book)}>
@@ -1446,7 +1523,7 @@ function App() {
             {/* Fast Auto-Fill Section (Phases 3 & 4) */}
             <div className="recognition-box">
               <div className="recognition-title">{t(lang, 'fastAutoFill')}</div>
-              <div className="recognition-desc">{t(lang, 'fastAutoFillDesc')}</div>
+               <div className="recognition-desc">{t(lang, 'fastAutoFillDesc')}</div>
 
               <div className="recognition-actions">
                 <label className="secondary-button file-upload-btn">
@@ -1463,22 +1540,29 @@ function App() {
                   />
                 </label>
 
-                <form className="online-search-form" onSubmit={e => void handleOnlineSearch(e)}>
+                <div className="online-search-form">
                   <input
                     ref={onlineSearchInputRef}
                     value={onlineQuery}
                     onChange={e => setOnlineQuery(e.target.value)}
-                    placeholder={t(lang, 'lookupOnlinePlaceholder')}
+                     placeholder={t(lang, 'lookupOnlinePlaceholder')}
                     disabled={scanning}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        void handleOnlineSearch()
+                      }
+                    }}
                   />
                   <button
                     className="secondary-button"
-                    type="submit"
+                    type="button"
                     disabled={scanning || !onlineQuery.trim()}
+                    onClick={() => void handleOnlineSearch()}
                   >
                     {scanning ? t(lang, 'searching') : t(lang, 'lookupBtn')}
                   </button>
-                </form>
+                </div>
               </div>
 
               {scanning && (
@@ -1531,13 +1615,40 @@ function App() {
                               </span>
                             )}
                           </div>
+                           {cand.field_conflicts && Object.keys(cand.field_conflicts).length > 0 && (
+                             <div className="candidate-description" role="alert">
+                               Conflicting values:{' '}
+                               {Object.entries(cand.field_conflicts)
+                                 .map(([fieldName, values]) => `${fieldName}: ${values.filter(value => value !== null).join(' / ')}`)
+                                 .join('; ')}
+                             </div>
+                           )}
                           <div className="candidate-tags">
-                            {cand.price !== null && (
-                              <span className="tag-price">
-                                ₹{Number(cand.price).toFixed(2)} ({t(lang, 'suggestedPrice')})
+                            <span className="tag-price">
+                              {formatPrice(cand.price, cand.price_currency)}
+                              {cand.price !== null && ` (${t(lang, 'suggestedPrice')})`}
+                            </span>
+                            {cand.category && (
+                              <span
+                                className="tag-source"
+                                style={{ backgroundColor: '#e8f4fd', color: '#0d47a1', borderColor: '#bbdefb' }}
+                                title={`${cand.category}${cand.subcategory ? ` › ${cand.subcategory}` : ''}`}
+                              >
+                                {categoryLabel(lang, cand.category)}{cand.subcategory ? ` › ${categoryLabel(lang, cand.subcategory)}` : ''}
                               </span>
                             )}
                             <span className="tag-source">{cand.source}</span>
+                            {cand.source_url && (
+                              <a
+                                href={cand.source_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                style={{ marginLeft: 6, fontSize: 11, color: '#2b6e49', textDecoration: 'underline' }}
+                                title={cand.source_url}
+                              >
+                                {t(lang, 'viewSource')}
+                              </a>
+                            )}
                           </div>
                         </div>
                         <button
@@ -1554,9 +1665,120 @@ function App() {
               )}
             </div>
 
-            {/* Standard Form Inputs */}
+             {selectedCandidate && !editingId && (
+               <div className="confirmed-metadata" role="status">
+                 <div>
+                   <strong>{selectedCandidate.title}</strong>
+                   <span>
+                     {[selectedCandidate.author, selectedCandidate.publisher]
+                       .filter(Boolean)
+                       .join(' · ')}
+                   </span>
+                 </div>
+                   <button className="secondary-button" type="button" onClick={() => setManualDetailsOpen(true)}>
+                    {t(lang, 'editMetadata')}
+                 </button>
+                   <small>{t(lang, 'metadataRetrieved')}</small>
+                 <div className="metadata-review-grid">
+                   <label>
+                     {t(lang, 'bookTitleReq')}
+                     <input
+                       ref={stockInputRef}
+                       required
+                       value={form.title}
+                       onChange={event => updateReviewedCatalogueField('title', event.target.value, event.target.value)}
+                     />
+                     <small>{form.title ? t(lang, 'metadataRetrieved') : t(lang, 'metadataMissing')}</small>
+                   </label>
+                   <label>
+                     {t(lang, 'author')}
+                     <input
+                       value={form.author || ''}
+                       onChange={event => updateReviewedCatalogueField('author', event.target.value, event.target.value || null)}
+                     />
+                     <small>{form.author ? t(lang, 'metadataRetrieved') : t(lang, 'metadataMissing')}</small>
+                   </label>
+                   <label>
+                     {t(lang, 'publisher')}
+                     <input
+                       value={form.publisher || ''}
+                       onChange={event => updateReviewedCatalogueField('publisher', event.target.value, event.target.value || null)}
+                     />
+                     <small>{form.publisher ? t(lang, 'metadataRetrieved') : t(lang, 'metadataMissing')}</small>
+                   </label>
+                   <label>
+                     {t(lang, 'category')}
+                     <select
+                       className="filter-select"
+                       value={form.category || ''}
+                       onChange={event => {
+                         field('category', event.target.value)
+                         field('subcategory', '')
+                         updateSelectedMetadata('category', event.target.value || null)
+                         updateSelectedMetadata('subcategory', null)
+                       }}
+                     >
+                       <option value="">{t(lang, 'categorySelect')}</option>
+                       {categories.map(category => (
+                         <option key={category.id} value={category.name}>{categoryLabel(lang, category.name)}</option>
+                       ))}
+                     </select>
+                     <small>{form.category ? t(lang, 'metadataRetrieved') : t(lang, 'metadataMissing')}</small>
+                   </label>
+                   <label>
+                     {t(lang, 'subcategory')}
+                     {formSubcategories.length > 0 ? (
+                       <select
+                         className="filter-select"
+                         value={form.subcategory || ''}
+                         onChange={event => updateReviewedCatalogueField('subcategory', event.target.value, event.target.value || null)}
+                       >
+                         <option value="">{t(lang, 'subcategorySelect')}</option>
+                         {formSubcategories.map(subcategory => (
+                           <option key={subcategory} value={subcategory}>{categoryLabel(lang, subcategory)}</option>
+                         ))}
+                       </select>
+                     ) : (
+                       <input
+                         value={form.subcategory || ''}
+                         onChange={event => updateReviewedCatalogueField('subcategory', event.target.value, event.target.value || null)}
+                         placeholder={t(lang, 'subcategorySelect')}
+                       />
+                     )}
+                     <small>{form.subcategory ? t(lang, 'metadataRetrieved') : t(lang, 'metadataMissing')}</small>
+                   </label>
+                   <label>
+                     {t(lang, 'price')} ({currencyLabel(form.price_currency ?? (selectedCandidate ? null : 'INR'))})
+                     <input
+                       type="number"
+                       min="0"
+                       step="0.01"
+                       value={form.price ?? ''}
+                       onChange={event => {
+                         const value = event.target.value === '' ? null : Number(event.target.value)
+                         field('price', value)
+                         updateSelectedMetadata('price', value)
+                       }}
+                       placeholder={t(lang, 'pricePlaceholder')}
+                     />
+                     <small>{form.price !== null && form.price !== undefined ? t(lang, 'metadataRetrieved') : t(lang, 'metadataMissing')}</small>
+                   </label>
+                 </div>
+               </div>
+             )}
+
+             {!editingId && !selectedCandidate && !manualDetailsOpen && (
+               <div className="manual-fallback" role="status">
+                 <span>{t(lang, 'identifyFirst')}</span>
+                 <button className="secondary-button" type="button" onClick={() => setManualDetailsOpen(true)}>
+                   {t(lang, 'manualEntry')}
+                 </button>
+               </div>
+             )}
+
+             {/* Stock number is always the only required physical-copy entry. */}
             <form onSubmit={event => void submitForm(event)}>
-              <div className="form-grid">
+               <div className="form-grid registration-stock-only">
                 <label>
                   {t(lang, 'stockNumberReq')}
                   <input
@@ -1566,8 +1788,17 @@ function App() {
                     onChange={event => field('stock_number', event.target.value)}
                     placeholder={t(lang, 'stockPlaceholder')}
                   />
-                </label>
-                <label>
+                  {stockDuplicate && (
+                    <small role="alert" style={{ color: '#a13b2c' }}>
+                      This stock number is already used{stockDuplicate.title ? ` by “${stockDuplicate.title}”` : ''}.
+                    </small>
+                  )}
+                 </label>
+               </div>
+
+               {(editingId || manualDetailsOpen) && (
+               <div className="form-grid">
+                 <label>
                   {t(lang, 'bookTitleReq')}
                   <input
                     required
@@ -1642,7 +1873,7 @@ function App() {
                 </label>
 
                 <label>
-                  {t(lang, 'price')} (₹)
+                  {t(lang, 'price')} ({currencyLabel(form.price_currency ?? 'INR')})
                   <input
                     type="number"
                     min="0"
@@ -1655,8 +1886,9 @@ function App() {
                   />
                 </label>
               </div>
+               )}
 
-              <p className="form-note">{t(lang, 'formNote')}</p>
+               <p className="form-note">{t(lang, 'formNote')}</p>
               {error && <div className="error-banner" role="alert">{error}</div>}
 
               <div className="modal-actions">
@@ -1667,7 +1899,7 @@ function App() {
                 >
                   {t(lang, 'cancel')}
                 </button>
-                <button className="primary-button" disabled={saving} type="submit">
+                 <button className="primary-button" disabled={saving || (!editingId && !form.title.trim())} type="submit">
                   {saving ? t(lang, 'saving') : editingId ? t(lang, 'saveChanges') : t(lang, 'saveBook')}
                 </button>
               </div>
@@ -2205,7 +2437,7 @@ function App() {
                     <th style={{ padding: 6 }}>Book Title *</th>
                     <th style={{ padding: 6 }}>Author</th>
                     <th style={{ padding: 6 }}>Category</th>
-                    <th style={{ padding: 6 }}>Price (₹)</th>
+                    <th style={{ padding: 6 }}>Price</th>
                     <th style={{ padding: 6 }}>Scan Photo</th>
                     <th style={{ padding: 6 }}></th>
                   </tr>
@@ -2253,7 +2485,7 @@ function App() {
                           type="number"
                           value={row.price ?? ''}
                           onChange={e => handleBatchRowChange(idx, 'price', e.target.value ? Number(e.target.value) : null)}
-                          placeholder="₹"
+                          placeholder="Amount"
                           style={{ width: 75, height: 30, border: '1px solid #dfe5df', borderRadius: 4, padding: '0 6px' }}
                         />
                       </td>
@@ -2407,13 +2639,13 @@ function App() {
                         <b>Local Copy:</b>
                         <div>Title: {c.local_data.title || '—'}</div>
                         <div>Author: {c.local_data.author || '—'}</div>
-                        <div>Price: {c.local_data.price != null ? `₹${c.local_data.price}` : '—'}</div>
+                        <div>Price: {formatBookPrice(c.local_data.price, c.local_data.price_source || null, c.local_data.price_currency || null)}</div>
                       </div>
                       <div>
                         <b>Remote Copy:</b>
                         <div>Title: {c.remote_data.title || '—'}</div>
                         <div>Author: {c.remote_data.author || '—'}</div>
-                        <div>Price: {c.remote_data.price != null ? `₹${c.remote_data.price}` : '—'}</div>
+                        <div>Price: {formatBookPrice(c.remote_data.price, c.remote_data.price_source || null, c.remote_data.price_currency || null)}</div>
                       </div>
                     </div>
 

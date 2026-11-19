@@ -12,11 +12,13 @@ Implemented in this scaffold:
 - Manually entered, unique stock numbers.
 - Repeated book titles are allowed; every physical copy is a separate record.
 - Missing metadata is preserved and flagged for later completion.
+- Automatic ISBN/title/author/photo lookup queries the existing metadata providers, runs normalized and Malayalam/transliteration title strategies, enriches Open Library work results from editions, and shows candidates for librarian selection.
+- Registration persists only the eight approved catalogue fields; ISBN and other provider bibliographic details remain transient lookup data.
 - Basic audit log entries for book creation, edits and deletion.
 - English and Malayalam interface labels, including category and subcategory labels.
 - Idempotent two-level category seed with 12 main categories and 59 subcategories.
 
-Not implemented yet (planned phases): front-cover OCR, Excel/CSV/PDF export, full audit viewer/recycle-bin restore, cloud PostgreSQL sync, PWA/Tauri packaging.
+Not implemented yet (planned phases): Excel/CSV/PDF export, full audit viewer/recycle-bin restore, cloud PostgreSQL sync, PWA/Tauri packaging.
 
 ## Requirements
 

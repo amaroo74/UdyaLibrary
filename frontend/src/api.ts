@@ -133,7 +133,9 @@ export async function getMe(): Promise<User> {
     headers: authHeaders(),
   })
   if (!response.ok) {
-    clearAuthToken()
+    if (response.status === 401) {
+      clearAuthToken()
+    }
     return handleResponseError(response, 'Session expired. Please sign in again.')
   }
   return response.json()
@@ -188,11 +190,19 @@ export type Book = {
   serial_number: string
   stock_number: string
   title: string
+  isbn: string | null
   author: string | null
   publisher: string | null
+  publication_date: string | null
+  publication_year: number | null
+  edition: string | null
+  language: string | null
+  page_count: number | null
+  description: string | null
   category: string | null
   subcategory: string | null
   price: string | number | null
+  price_currency: string | null
   price_source: string | null
   price_confirmed: boolean
   created_at: string
@@ -204,25 +214,66 @@ export type Book = {
 export type BookInput = {
   stock_number: string
   title: string
+  isbn?: string | null
   author?: string
   publisher?: string
+  publication_date?: string | null
+  publication_year?: number | null
+  edition?: string | null
+  language?: string | null
+  page_count?: number | null
+  description?: string | null
   category?: string
   subcategory?: string
   price?: number | null
+  price_currency?: string | null
   price_source?: string | null
   price_confirmed?: boolean
 }
 
 export type MetadataCandidate = {
   title: string
+  isbn: string | null
   author: string | null
   publisher: string | null
   price: number | null
   price_source: string | null
+  price_currency: string | null
   source: string
   subjects: string[]
   category: string | null
   subcategory: string | null
+  published_date?: string | null
+  publication_year?: number | null
+  edition?: string | null
+  language?: string | null
+  page_count?: number | null
+  description?: string | null
+  subtitle?: string | null
+  editor?: string | null
+  translator?: string | null
+  series?: string | null
+  volume?: string | null
+  cover_image_url?: string | null
+  source_url?: string | null
+  field_provenance?: Record<string, string[]>
+  field_conflicts?: Record<string, Array<string | number | null>>
+  local_copy_count?: number | null
+  match_status?: string | null
+}
+
+export type MetadataLookupStatus =
+  | 'exact_match'
+  | 'verified_alternative'
+  | 'unverified_search'
+  | 'provider_unavailable'
+  | 'no_match_found'
+  | 'conflicting_exact_matches'
+
+export type MetadataLookupResponse = {
+  candidates: MetadataCandidate[]
+  status: MetadataLookupStatus
+  providerStatus: Record<string, string>
 }
 
 export type RecognitionResult = {
@@ -232,6 +283,34 @@ export type RecognitionResult = {
   ocr_available: boolean
   ocr_lines: string[]
   candidates: MetadataCandidate[]
+}
+
+export type StockNumberCheck = {
+  stock_number: string
+  used: boolean
+  title: string | null
+  book_id: number | null
+}
+
+export async function getStockNumberSuggestion(): Promise<{ stock_number: string }> {
+  const response = await fetch(`${API_BASE}/api/books/stock-number/suggestion`, {
+    headers: authHeaders(),
+  })
+  if (!response.ok) {
+    return handleResponseError(response, 'Could not suggest a stock number')
+  }
+  return response.json()
+}
+
+export async function checkStockNumber(stockNumber: string): Promise<StockNumberCheck> {
+  const response = await fetch(
+    `${API_BASE}/api/books/stock-number/check?${new URLSearchParams({ stock_number: stockNumber })}`,
+    { headers: authHeaders() },
+  )
+  if (!response.ok) {
+    return handleResponseError(response, 'Could not check the stock number')
+  }
+  return response.json()
 }
 
 export async function scanCoverImage(file: File): Promise<RecognitionResult> {
@@ -264,12 +343,14 @@ export async function lookupMetadata(params: {
   isbn?: string
   title?: string
   author?: string
+  publisher?: string
   q?: string
-}): Promise<MetadataCandidate[]> {
+}): Promise<MetadataLookupResponse> {
   const searchParams = new URLSearchParams()
   if (params.isbn) searchParams.set('isbn', params.isbn)
   if (params.title) searchParams.set('title', params.title)
   if (params.author) searchParams.set('author', params.author)
+  if (params.publisher) searchParams.set('publisher', params.publisher)
   if (params.q) searchParams.set('q', params.q)
 
   const response = await fetch(`${API_BASE}/api/recognition/lookup?${searchParams}`, {
@@ -278,7 +359,36 @@ export async function lookupMetadata(params: {
   if (!response.ok) {
     return handleResponseError(response, 'Metadata lookup failed')
   }
-  return response.json()
+  const candidates: MetadataCandidate[] = await response.json()
+  const headerStatus = response.headers.get('X-Metadata-Result-Status')
+  const validStatuses: MetadataLookupStatus[] = [
+    'exact_match',
+    'verified_alternative',
+    'unverified_search',
+    'provider_unavailable',
+    'no_match_found',
+    'conflicting_exact_matches',
+  ]
+  const status = validStatuses.includes(headerStatus as MetadataLookupStatus)
+    ? headerStatus as MetadataLookupStatus
+    : candidates.length > 0
+      ? 'unverified_search'
+      : 'no_match_found'
+  let providerStatus: Record<string, string> = {}
+  const rawProviderStatus = response.headers.get('X-Metadata-Provider-Status')
+  if (rawProviderStatus) {
+    try {
+      const parsed: unknown = JSON.parse(rawProviderStatus)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        providerStatus = Object.fromEntries(
+          Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+        )
+      }
+    } catch {
+      providerStatus = {}
+    }
+  }
+  return { candidates, status, providerStatus }
 }
 
 export type CategoryRead = {
@@ -307,7 +417,9 @@ export type BookFilterParams = {
 }
 
 export async function getCategories(): Promise<CategoryHierarchy[]> {
-  const response = await fetch(`${API_BASE}/api/categories`)
+  const response = await fetch(`${API_BASE}/api/categories`, {
+    headers: authHeaders(),
+  })
   if (!response.ok) {
     return handleResponseError(response, 'Could not load categories')
   }
@@ -349,7 +461,9 @@ export async function getBooks(filters: BookFilterParams = {}): Promise<{ items:
   if (filters.sort_by) params.set('sort_by', filters.sort_by)
   if (filters.sort_order) params.set('sort_order', filters.sort_order)
 
-  const response = await fetch(`${API_BASE}/api/books?${params}`)
+  const response = await fetch(`${API_BASE}/api/books?${params}`, {
+    headers: authHeaders(),
+  })
   if (!response.ok) {
     return handleResponseError(response, 'Could not load the catalogue')
   }
@@ -432,7 +546,9 @@ export type BatchRegisterResult = {
   errors: { stock_number?: string; error: string }[]
 }
 
-export function getExportUrl(format: 'csv' | 'xlsx' | 'pdf', filters: BookFilterParams = {}): string {
+export type ExportFormat = 'csv' | 'xlsx' | 'pdf'
+
+export function getExportUrl(format: ExportFormat, filters: BookFilterParams = {}): string {
   const params = new URLSearchParams()
   if (filters.q) params.set('q', filters.q)
   if (filters.category) params.set('category', filters.category)
@@ -444,6 +560,71 @@ export function getExportUrl(format: 'csv' | 'xlsx' | 'pdf', filters: BookFilter
   if (filters.sort_order) params.set('sort_order', filters.sort_order)
 
   return `${API_BASE}/api/bulk/export/${format}?${params.toString()}`
+}
+
+function safeDownloadFilename(value: string | null, fallback: string): string {
+  if (!value) return fallback
+
+  const encodedFilename = value.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  const quotedFilename = value.match(/filename="([^"]+)"/i)?.[1]
+  const plainFilename = value.match(/filename=([^;]+)/i)?.[1]
+  const rawFilename = encodedFilename || quotedFilename || plainFilename
+  if (!rawFilename) return fallback
+
+  let filename = rawFilename.trim()
+  if (encodedFilename) {
+    try {
+      filename = decodeURIComponent(filename)
+    } catch {
+      return fallback
+    }
+  }
+
+  filename = filename
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
+    .replace(/^\.+/, '')
+    .trim()
+  return filename || fallback
+}
+
+export async function downloadCatalogueExport(
+  format: ExportFormat,
+  filters: BookFilterParams = {},
+): Promise<void> {
+  const fallbackFilename = `udaya_library_catalogue.${format}`
+  let response: Response
+
+  try {
+    response = await fetch(getExportUrl(format, filters), {
+      headers: authHeaders(),
+    })
+  } catch {
+    throw new Error('Could not connect to the API to download the export.')
+  }
+
+  if (!response.ok) {
+    return handleResponseError(response, 'Export download failed')
+  }
+
+  let blob: Blob
+  try {
+    blob = await response.blob()
+  } catch {
+    throw new Error('The export download could not be read.')
+  }
+
+  const objectUrl = URL.createObjectURL(blob)
+  const filename = safeDownloadFilename(response.headers.get('Content-Disposition'), fallbackFilename)
+  try {
+    const link = document.createElement('a')
+    link.href = objectUrl
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  } finally {
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
+  }
 }
 
 export async function importCatalogueFile(file: File): Promise<ImportResult> {
