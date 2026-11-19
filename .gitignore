@@ -40,3 +40,4 @@ coverage/
 # Pytest
 .pytest_cache/
 .pytest-temp-*/
+backend/recovery_server.py
