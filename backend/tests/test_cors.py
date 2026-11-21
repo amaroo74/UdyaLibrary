@@ -52,3 +52,30 @@ def test_login_preflight_rejects_unapproved_origin():
 
     assert response.status_code == 400
     assert "access-control-allow-origin" not in response.headers
+
+
+def test_login_preflight_allows_private_lan_origin_on_server_port():
+    response = client.options(
+        "/api/auth/login",
+        headers={
+            "Origin": "http://192.168.1.42:8000",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://192.168.1.42:8000"
+
+
+def test_login_preflight_rejects_private_lan_origin_on_wrong_port():
+    response = client.options(
+        "/api/auth/login",
+        headers={
+            "Origin": "http://192.168.1.42:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 400

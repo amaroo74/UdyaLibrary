@@ -2495,6 +2495,7 @@ function App() {
                           <input
                             type="file"
                             accept="image/*"
+                            capture="environment"
                             style={{ display: 'none' }}
                             onChange={e => {
                               const file = e.target.files?.[0]
