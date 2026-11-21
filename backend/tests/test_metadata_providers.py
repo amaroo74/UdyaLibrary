@@ -1101,3 +1101,58 @@ async def test_open_library_empty_docs_is_no_match(monkeypatch):
 
     assert results == []
     assert status["Open Library"] == "no_match"
+
+
+def test_normalize_author_name_inverted_and_trailing_commas():
+    assert providers.normalize_author_name("Clear, James,") == "James Clear"
+    assert providers.normalize_author_name("Todd, Charles.") == "Charles Todd"
+    assert providers.normalize_author_name("Brown, Dale,, 1956-") == "Dale Brown"
+    assert providers.normalize_author_name("Dostoievski, Fiódor, 1821-1881.") == "Fiódor Dostoievski"
+    assert providers.normalize_author_name("Kalam, A. P. J. Abdul") == "A. P. J. Abdul Kalam"
+    assert providers.normalize_author_name("Clarke, Arthur C.") == "Arthur C. Clarke"
+    assert providers.normalize_author_name("King, Martin Luther, Jr.") == "Martin Luther King, Jr."
+
+
+def test_normalize_authors_multi_author_and_preservation():
+    assert providers.normalize_authors(["García, Héctor,", "Miralles, Francesc,"]) == "Héctor García, Francesc Miralles"
+    assert providers.normalize_authors("Héctor García, Francesc Miralles") == "Héctor García, Francesc Miralles"
+    assert providers.normalize_authors("Tui T. Sutherland, Kari Sutherland") == "Tui T. Sutherland, Kari Sutherland"
+    assert providers.normalize_authors("Todd, Charles; Todd, Caroline") == "Charles Todd, Caroline Todd"
+    assert providers.normalize_authors("Todd, Charles; Todd, Charles") == "Charles Todd"
+
+
+def test_normalize_authors_protects_malayalam():
+    assert providers.normalize_authors("ഒ. ചന്തുമേനോൻ") == "ഒ. ചന്തുമേനോൻ"
+    assert providers.normalize_authors("ഒ.വി. വിജയൻ, ഡി.സി. ബുക്സ്") == "ഒ.വി. വിജയൻ, ഡി.സി. ബുക്സ്"
+    assert providers.normalize_authors("ഒ. ചന്തുമേനോൻ,") == "ഒ. ചന്തുമേനോൻ"
+
+
+def test_normalize_candidate_cleans_author_automatically():
+    cand = providers.normalize_candidate("Test Book", author="Clear, James,")
+    assert cand["author"] == "James Clear"
+
+
+@pytest.mark.asyncio
+async def test_library_of_congress_author_cleaning_with_date_and_inverted_name(monkeypatch):
+    loc_xml = """\
+<searchRetrieveResponse xmlns="http://www.loc.gov/zing/srw/">
+  <records><record><recordData>
+    <mods xmlns="http://www.loc.gov/mods/v3">
+      <titleInfo><title>Flight of the Old Dog</title></titleInfo>
+      <name type="personal">
+        <namePart>Brown, Dale,</namePart>
+        <namePart type="date">1956-</namePart>
+      </name>
+      <originInfo><publisher>Putnam</publisher><dateIssued>1987</dateIssued></originInfo>
+      <identifier type="isbn">9780399132278</identifier>
+    </mods>
+  </recordData></record></records>
+</searchRetrieveResponse>
+"""
+    install_fake_client(monkeypatch, {providers.LOC_SRU_URL: FakeResponse(200, loc_xml)})
+    results = await providers.query_library_of_congress(FakeAsyncClient(), isbn="9780399132278")
+
+    assert len(results) == 1
+    assert results[0]["title"] == "Flight of the Old Dog"
+    assert results[0]["author"] == "Dale Brown"
+

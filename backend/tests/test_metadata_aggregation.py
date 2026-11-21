@@ -376,3 +376,30 @@ def test_scenario_8_insufficient_metadata():
     cat, sub = suggest_category(c, hierarchy)
     assert cat is None
     assert sub is None
+
+
+def test_author_normalization_and_trailing_comma_cleanup_in_aggregation():
+    cand1 = normalize_candidate(
+        title="Atomic Habits",
+        author="Clear, James,",
+        publisher="Penguin",
+        isbn="9780735211292",
+        source="SourceA",
+    )
+    assert cand1["author"] == "James Clear"
+
+    cand2 = normalize_candidate(
+        title="Atomic Habits",
+        author="James Clear",
+        publisher="Penguin",
+        isbn="9780735211292",
+        source="SourceB",
+    )
+    assert cand2["author"] == "James Clear"
+
+    aggregated = aggregate_candidates([cand1, cand2])
+    assert len(aggregated) == 1
+    assert aggregated[0]["author"] == "James Clear"
+    # No author conflict because normalized author strings match
+    assert "author" not in aggregated[0].get("field_conflicts", {})
+

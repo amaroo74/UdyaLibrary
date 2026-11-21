@@ -41,3 +41,20 @@ coverage/
 .pytest_cache/
 .pytest-temp-*/
 backend/recovery_server.py
+
+# Local AI assistant instructions & workspace configs (keep local only)
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.cursorrules
+.windsurfrules
+.github/copilot-instructions.md
+.claude/
+.cursor/
+.gemini/
+.agent/
+.agents/
+.github/agents/
+ANTIGRAVITY_PLAN.md
+.github/agents/
+ANTIGRAVITY_PLAN.md

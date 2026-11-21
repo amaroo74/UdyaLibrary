@@ -61,6 +61,126 @@ def description_text(value: Any) -> str | None:
     return first_text(value)
 
 
+def normalize_author_name(raw: str, *, allow_inversion: bool = True) -> str:
+    """Normalize an individual author name, strip cataloguing artifacts, and reorder inverted names."""
+    if not raw or not isinstance(raw, str):
+        return ""
+
+    text = unicodedata.normalize("NFC", raw).strip()
+    if not text:
+        return ""
+
+    # Collapse multiple commas and internal spaces
+    text = re.sub(r",\s*,+", ",", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Strip MARC / Library of Congress life dates and parenthetical birth/death years
+    text = re.sub(
+        r"\s*\(\s*(?:(?:ca\.|fl\.|b\.|d\.)\s*)?\b\d{3,4}\b(?:\s*[-–—]\s*(?:\b\d{3,4}\b)?)?\s*\)",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"\s*\[\s*(?:(?:ca\.|fl\.|b\.|d\.)\s*)?\b\d{3,4}\b(?:\s*[-–—]\s*(?:\b\d{3,4}\b)?)?\s*\]",
+        "",
+        text,
+    )
+    text = re.sub(
+        r",?\s*(?:(?:ca\.|fl\.|b\.|d\.)\s*)?\b\d{3,4}\b\s*[-–—]\s*(?:\b\d{3,4}\b)?\.?\s*$",
+        "",
+        text,
+    )
+    text = re.sub(
+        r",?\s*(?:(?:ca\.|fl\.|b\.|d\.)\s*)\b\d{3,4}\b\.?\s*$",
+        "",
+        text,
+    )
+
+    # Clean up double commas or trailing commas/spaces after stripping dates
+    text = re.sub(r",\s*,+", ",", text)
+    text = re.sub(r"\s+", " ", text).strip(" \t\r\n,;:")
+
+    # Clean trailing period if not part of an initial or title abbreviation (e.g. "Todd, Charles." -> "Todd, Charles", but keep "A. P. J." and "Jr.")
+    while text.endswith("."):
+        if re.search(r"(?:^|\s|[A-Za-z]\.)(?:[A-Za-z]|Jr|Sr|Esq|Ph\.D|M\.D)\.$", text, re.IGNORECASE):
+            break
+        text = text[:-1].rstrip(" \t\r\n,;:")
+
+    if not text:
+        return ""
+
+    # Do not invert Malayalam names
+    if re.search(r"[\u0D00-\u0D7F]", text):
+        return text
+
+    if not allow_inversion:
+        return text
+
+    # Handle inversion for "Surname, Given Name"
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    if len(parts) == 2:
+        left, right = parts[0], parts[1]
+        left_words = left.split()
+        right_words = right.split()
+
+        should_invert = False
+        if len(left_words) == 1:
+            should_invert = True
+        elif len(left_words) == 2 and len(right_words) == 1:
+            should_invert = True
+        elif len(left_words) == 2 and left_words[0].lower() in {"van", "von", "de", "da", "del", "di", "le", "la"}:
+            should_invert = True
+
+        if should_invert:
+            return f"{right} {left}"
+    elif len(parts) == 3:
+        suffix = parts[2].rstrip(".").lower()
+        if suffix in {"jr", "sr", "ii", "iii", "iv", "v", "ph.d", "md"}:
+            formatted_suffix = parts[2]
+            if suffix in {"jr", "sr"} and not formatted_suffix.endswith("."):
+                formatted_suffix = f"{formatted_suffix}."
+            return f"{parts[1]} {parts[0]}, {formatted_suffix}"
+
+    return text
+
+
+def normalize_authors(authors: list[str] | str | None) -> str | None:
+    """Normalize one or more author names and join them with comma-space."""
+    if not authors:
+        return None
+
+    if isinstance(authors, str):
+        if ";" in authors:
+            raw_list = [item.strip() for item in authors.split(";") if item.strip()]
+        elif " and " in authors and not re.search(r"[\u0D00-\u0D7F]", authors):
+            raw_list = [item.strip() for item in re.split(r"\s+\band\b\s+", authors) if item.strip()]
+        elif " & " in authors and not re.search(r"[\u0D00-\u0D7F]", authors):
+            raw_list = [item.strip() for item in authors.split(" & ") if item.strip()]
+        else:
+            if re.search(r"[\u0D00-\u0D7F]", authors):
+                cleaned = normalize_author_name(authors, allow_inversion=False)
+                return cleaned or None
+            cleaned = normalize_author_name(authors, allow_inversion=True)
+            return cleaned or None
+    elif isinstance(authors, list):
+        raw_list = [str(item) for item in authors if item]
+    else:
+        return None
+
+    normalized_list: list[str] = []
+    seen: set[str] = set()
+    for item in raw_list:
+        cleaned = normalize_author_name(item, allow_inversion=True)
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            normalized_list.append(cleaned)
+
+    if not normalized_list:
+        return None
+
+    return ", ".join(normalized_list)
+
+
 def normalize_candidate(
     title: str,
     author: str | None = None,
@@ -87,10 +207,11 @@ def normalize_candidate(
     source_url: str | None = None,
 ) -> dict[str, Any]:
     """Normalize provider data and retain transient bibliographic details."""
+    cleaned_author = normalize_authors(author)
     candidate = {
         "title": title.strip() if title else "",
-        "author": author.strip() if author else None,
-        "publisher": _safe_publisher(publisher, author),
+        "author": cleaned_author,
+        "publisher": _safe_publisher(publisher, cleaned_author),
         "price": float(price) if price is not None and price > 0 else None,
         "price_source": price_source if price is not None and price > 0 else None,
         "price_currency": price_currency.strip().upper() if price is not None and price > 0 and price_currency and price_currency.strip() else None,
@@ -361,7 +482,7 @@ async def query_google_books(
                 continue
 
             authors = v_info.get("authors", [])
-            author_str = ", ".join(authors) if authors else None
+            author_str = normalize_authors(authors)
             publisher = v_info.get("publisher")
             edition_keys = {
                 f"isbn:{identifier.get('identifier').replace('-', '')}"
@@ -489,7 +610,7 @@ async def query_open_library(
                                     author_names.append(a_resp.json().get("name", ""))
                             except Exception:
                                 pass
-                    author_str = ", ".join(filter(None, author_names)) or None
+                    author_str = normalize_authors(author_names)
                     languages = [
                         item.get("key", "").rsplit("/", 1)[-1]
                         for item in data.get("languages", [])
@@ -630,7 +751,7 @@ async def query_open_library(
                 if not b_title:
                     continue
                 author_names = doc.get("author_name", [])
-                author_str = ", ".join(author_names) if author_names else None
+                author_str = normalize_authors(author_names)
                 publishers = doc.get("publisher", [])
                 pub_str = publishers[0] if publishers else None
                 if not pub_str and doc.get("key") and edition_enrichment_calls < 2:
@@ -776,12 +897,22 @@ async def query_library_of_congress(
                 None,
             )
             subtitle = _first_xml_text(title_info, "subTitle") if title_info is not None else None
-            names = [
-                _xml_text(name_part)
-                for name in _xml_children(mods, "name")
-                for name_part in _xml_children(name, "namePart")
-                if _xml_text(name_part)
-            ]
+            author_names: list[str] = []
+            for name in _xml_children(mods, "name"):
+                if (name.get("type") or "").lower() == "editor":
+                    continue
+                parts: list[str] = []
+                for part in _xml_children(name, "namePart"):
+                    if (part.get("type") or "").lower() == "date":
+                        continue
+                    val = _xml_text(part)
+                    if val:
+                        parts.append(val)
+                if parts:
+                    cleaned_name = normalize_author_name(" ".join(parts))
+                    if cleaned_name:
+                        author_names.append(cleaned_name)
+            author_str = normalize_authors(author_names)
             identifiers = [
                 _xml_text(identifier)
                 for identifier in _xml_children(mods, "identifier")
@@ -794,7 +925,7 @@ async def query_library_of_congress(
             candidates.append(
                 normalize_candidate(
                     title=record_title,
-                    author=", ".join(dict.fromkeys(names)) or None,
+                    author=author_str,
                     publisher=publisher,
                     source="Library of Congress",
                     subjects=[
@@ -888,10 +1019,12 @@ async def query_internet_archive(
             if _is_junk_title(first_text(doc.get("title")), title or query):
                 continue
             isbn_value = _first_isbn(doc.get("isbn"))
+            creator_val = doc.get("creator")
+            author_val = creator_val if isinstance(creator_val, list) else first_text(creator_val)
             candidates.append(
                 normalize_candidate(
                     title=first_text(doc.get("title")) or "",
-                    author=first_text(doc.get("creator")),
+                    author=normalize_authors(author_val),
                     publisher=first_text(doc.get("publisher")),
                     source="Internet Archive",
                     subjects=doc.get("subject") if isinstance(doc.get("subject"), list) else [],
@@ -1080,7 +1213,7 @@ async def query_wikidata(
             candidates.append(
                 normalize_candidate(
                     title=work_title,
-                    author=", ".join(author_names) or None,
+                    author=normalize_authors(author_names),
                     publisher=", ".join(publisher_names) or None,
                     source="Wikidata",
                     published_date=publication_date,
